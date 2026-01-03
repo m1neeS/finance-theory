@@ -1,0 +1,50 @@
+# Environment & Secrets (JANGAN PUSH!)
+.env
+backend/.env
+frontend/.env
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Node
+node_modules/
+frontend/node_modules/
+dist/
+frontend/dist/
+
+# Test images (sensitif)
+*.jpg
+*.jpeg
+*.png
+!frontend/public/*.png
+!frontend/public/*.svg
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test
+.coverage
+htmlcov/
+.pytest_cache/
+
+# Kiro specs (optional, bisa di-push kalau mau)
+.kiro/
+
+# Lock files (optional)
+package-lock.json
