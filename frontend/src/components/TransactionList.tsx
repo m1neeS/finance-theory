@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { transactionApi } from '../lib/api'
 import { 
-  X, ArrowUpRight, ArrowDownRight, Calendar, Search, 
+  Calendar, Search, 
   ChevronLeft, Trash2, Filter, RefreshCw
 } from 'lucide-react'
 
