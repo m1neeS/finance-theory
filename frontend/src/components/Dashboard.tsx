@@ -187,6 +187,20 @@ export function Dashboard() {
   const savingsRate = data?.summary ? 
     Math.round(((data.summary.total_income - data.summary.total_expense) / data.summary.total_income) * 100) || 0 : 0
 
+  // Calculate percentage change from monthly trend
+  const getPercentageChange = (type: 'income' | 'expense') => {
+    if (!data?.monthlyTrend || data.monthlyTrend.length < 2) return null
+    const current = data.monthlyTrend[data.monthlyTrend.length - 1]
+    const previous = data.monthlyTrend[data.monthlyTrend.length - 2]
+    const currentVal = type === 'income' ? current.income : current.expense
+    const previousVal = type === 'income' ? previous.income : previous.expense
+    if (previousVal === 0) return currentVal > 0 ? 100 : 0
+    return Math.round(((currentVal - previousVal) / previousVal) * 100)
+  }
+
+  const incomeChange = getPercentageChange('income')
+  const expenseChange = getPercentageChange('expense')
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-violet-50 via-white to-cyan-50">
       {/* Decorative Elements */}
@@ -354,12 +368,16 @@ export function Dashboard() {
                   <p className="text-2xl font-bold text-gray-800">{formatCurrency(data?.summary?.total_income || 0)}</p>
                 </div>
               </div>
-              <div className="px-3 py-1.5 bg-emerald-50 rounded-full">
-                <span className="text-emerald-600 text-sm font-semibold">+12%</span>
-              </div>
+              {incomeChange !== null && (
+                <div className={`px-3 py-1.5 rounded-full ${incomeChange >= 0 ? 'bg-emerald-50' : 'bg-rose-50'}`}>
+                  <span className={`text-sm font-semibold ${incomeChange >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                    {incomeChange >= 0 ? '+' : ''}{incomeChange}%
+                  </span>
+                </div>
+              )}
             </div>
             <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-              <div className="h-full bg-gradient-to-r from-emerald-400 to-green-500 rounded-full" style={{ width: '75%' }}></div>
+              <div className="h-full bg-gradient-to-r from-emerald-400 to-green-500 rounded-full" style={{ width: `${Math.min(100, savingsRate > 0 ? 75 : 50)}%` }}></div>
             </div>
           </div>
 
@@ -375,12 +393,16 @@ export function Dashboard() {
                   <p className="text-2xl font-bold text-gray-800">{formatCurrency(data?.summary?.total_expense || 0)}</p>
                 </div>
               </div>
-              <div className="px-3 py-1.5 bg-rose-50 rounded-full">
-                <span className="text-rose-600 text-sm font-semibold">-5%</span>
-              </div>
+              {expenseChange !== null && (
+                <div className={`px-3 py-1.5 rounded-full ${expenseChange <= 0 ? 'bg-emerald-50' : 'bg-rose-50'}`}>
+                  <span className={`text-sm font-semibold ${expenseChange <= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                    {expenseChange >= 0 ? '+' : ''}{expenseChange}%
+                  </span>
+                </div>
+              )}
             </div>
             <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-              <div className="h-full bg-gradient-to-r from-rose-400 to-red-500 rounded-full" style={{ width: '45%' }}></div>
+              <div className="h-full bg-gradient-to-r from-rose-400 to-red-500 rounded-full" style={{ width: `${Math.min(100, data?.summary?.total_income ? Math.round((data.summary.total_expense / data.summary.total_income) * 100) : 0)}%` }}></div>
             </div>
           </div>
         </div>
