@@ -13,3 +13,7 @@ python-multipart==0.0.6
 # OCR Dependencies
 pytesseract==0.3.10
 Pillow==10.2.0
+
+# Security
+slowapi==0.1.9
+secure==0.3.0

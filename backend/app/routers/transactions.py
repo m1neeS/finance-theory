@@ -3,19 +3,24 @@ Transaction Router
 API endpoints for transaction management.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from typing import List
 from uuid import UUID
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from app.dependencies import get_current_user
 from app.schemas.transaction import TransactionCreate, TransactionUpdate, TransactionResponse
 from app.services import transaction_service
 
 router = APIRouter(prefix="/api/transactions", tags=["Transactions"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 @router.get("", response_model=List[TransactionResponse])
+@limiter.limit("60/minute")
 async def list_transactions(
+    request: Request,
     limit: int = Query(50, ge=1, le=100, description="Number of records per page"),
     offset: int = Query(0, ge=0, description="Number of records to skip"),
     current_user: dict = Depends(get_current_user)
@@ -30,7 +35,9 @@ async def list_transactions(
 
 
 @router.post("", response_model=TransactionResponse, status_code=201)
+@limiter.limit("30/minute")
 async def create_transaction(
+    request: Request,
     data: TransactionCreate,
     current_user: dict = Depends(get_current_user)
 ):

@@ -4,14 +4,17 @@ API endpoints for receipt image processing.
 Supports dual OCR providers: Tesseract (free) and Google Vision API (paid).
 """
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request
 from typing import Optional
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from app.dependencies import get_current_user
 from app.schemas.ocr import OCRResult, OCRProviderInfo
 from app.services import ocr_service
 
 router = APIRouter(prefix="/api/ocr", tags=["OCR"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 @router.get("/provider", response_model=OCRProviderInfo)
@@ -30,7 +33,9 @@ async def get_ocr_provider(
 
 
 @router.post("/process", response_model=OCRResult)
+@limiter.limit("10/minute")  # OCR is expensive, limit heavily
 async def process_receipt(
+    request: Request,
     file: UploadFile = File(..., description="Receipt image (JPG, PNG, PDF)"),
     current_user: dict = Depends(get_current_user)
 ):
@@ -64,7 +69,9 @@ async def process_receipt(
 
 
 @router.post("/extract", response_model=OCRResult)
+@limiter.limit("20/minute")
 async def extract_from_text(
+    request: Request,
     text: str = Form(..., description="OCR text to extract data from"),
     receipt_url: Optional[str] = Form(None, description="Receipt image URL"),
     current_user: dict = Depends(get_current_user)
