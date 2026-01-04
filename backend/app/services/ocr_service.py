@@ -165,6 +165,7 @@ def extract_date(text: str) -> Optional[date]:
         (r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})', 'ymd'),
         (r'(\d{1,2})[/-](\d{1,2})[/-](\d{2})\b', 'dmy_short'),
         (r'(\d{1,2})\s+(' + month_pattern + r')\s+(\d{4})', 'indo'),
+        (r'(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{2,4})', 'eng_short'),
     ]
     
     for pattern, fmt in patterns:
@@ -182,6 +183,13 @@ def extract_date(text: str) -> Optional[date]:
                 elif fmt == 'indo':
                     month = INDONESIAN_MONTHS.get(groups[1].lower(), 1)
                     return date(int(groups[2]), month, int(groups[0]))
+                elif fmt == 'eng_short':
+                    eng_months = {'jan':1,'feb':2,'mar':3,'apr':4,'may':5,'jun':6,'jul':7,'aug':8,'sep':9,'oct':10,'nov':11,'dec':12}
+                    month = eng_months.get(groups[1].lower(), 1)
+                    year = int(groups[2])
+                    if year < 100:
+                        year = 2000 + year
+                    return date(year, month, int(groups[0]))
             except:
                 continue
     return None
@@ -189,7 +197,7 @@ def extract_date(text: str) -> Optional[date]:
 
 def extract_merchant(text: str) -> Optional[str]:
     lines = text.strip().split('\n')
-    skip_words = ['struk', 'receipt', 'invoice', 'nota', 'kasir', 'tanggal', 'date', 'waktu', 'time', 'npwp']
+    skip_words = ['struk', 'receipt', 'invoice', 'nota', 'kasir', 'tanggal', 'date', 'waktu', 'time', 'npwp', 'pos', 'check']
     digits_only_pattern = re.compile(r'^[\d\s:/-]+$')
     
     for line in lines[:5]:
@@ -201,6 +209,10 @@ def extract_merchant(text: str) -> Optional[str]:
 
 
 def extract_items(text: str) -> List[Dict[str, Any]]:
+    """
+    Extract items from receipt text with multiple pattern matching.
+    Supports various Indonesian receipt formats.
+    """
     items = []
     lines = text.strip().split('\n')
     
@@ -208,74 +220,110 @@ def extract_items(text: str) -> List[Dict[str, Any]]:
         'total', 'subtotal', 'sub total', 'grand', 'tax', 'pajak', 'ppn', 'service',
         'diskon', 'discount', 'tunai', 'cash', 'kembalian', 'change', 'bayar',
         'payment', 'debit', 'kredit', 'credit', 'card', 'kartu', 'member',
-        'tanggal', 'date', 'waktu', 'time', 'kasir', 'cashier', 'struk', 'receipt'
+        'tanggal', 'date', 'waktu', 'time', 'kasir', 'cashier', 'struk', 'receipt',
+        'check no', 'pos', 'thank', 'terima kasih', 'please', 'silakan', 'npwp',
+        'alamat', 'address', 'telp', 'phone', 'www', 'http', '.com', '.id'
     ]
-    
-    # Pattern: name qty x price total
-    p1 = re.compile(r'^(.+?)\s+(\d+)\s*[xX]\s*([\d.,]+)\s+([\d.,]+)$')
-    # Pattern: name price x qty total
-    p2 = re.compile(r'^(.+?)\s+([\d.,]+)\s*[xX]\s*(\d+)\s+([\d.,]+)$')
-    # Pattern: qty name price total
-    p3 = re.compile(r'^(\d+)\s+(.+?)\s+([\d.,]+)\s+([\d.,]+)$')
-    # Pattern: name total (simple)
-    p4 = re.compile(r'^(.+?)\s{2,}([\d.,]+)$')
-    # Pattern: name @ price x qty total
-    p5 = re.compile(r'^(.+?)\s+@\s*([\d.,]+)\s*[xX]\s*(\d+)\s+([\d.,]+)$')
-    
-    all_patterns = [(p1, 0), (p2, 1), (p3, 2), (p4, 3), (p5, 4)]
     
     for line in lines:
         line = line.strip()
-        if not line or len(line) < 3:
-            continue
-        if any(kw in line.lower() for kw in skip_keywords):
+        if not line or len(line) < 5:
             continue
         
-        for pattern, idx in all_patterns:
-            match = pattern.match(line)
-            if match:
-                groups = match.groups()
-                try:
-                    if idx == 0:
-                        name, qty, price, total = groups
-                        qty = int(qty)
-                    elif idx == 1:
-                        name, price, qty, total = groups
-                        qty = int(qty)
-                    elif idx == 2:
-                        qty, name, price, total = groups
-                        qty = int(qty)
-                    elif idx == 3:
-                        name, total = groups
-                        qty = 1
-                        price = total
-                    elif idx == 4:
-                        name, price, qty, total = groups
-                        qty = int(qty)
-                    
-                    name = name.strip()
-                    if len(name) < 2:
-                        continue
-                    
-                    total_clean = total.replace(".", "").replace(",", "")
-                    if not total_clean.isdigit():
-                        continue
-                    total_val = int(total_clean)
-                    
-                    if total_val < 100 or total_val > 100000000:
-                        continue
-                    
-                    items.append({
-                        "name": name,
-                        "quantity": qty,
-                        "price": total_val,
-                        "selected": True
-                    })
-                    break
-                except (ValueError, IndexError):
-                    continue
+        line_lower = line.lower()
+        if any(kw in line_lower for kw in skip_keywords):
+            continue
+        
+        item = try_extract_item(line)
+        if item:
+            items.append(item)
     
     return items
+
+
+def try_extract_item(line: str) -> Optional[Dict[str, Any]]:
+    """Try multiple patterns to extract item from a line."""
+    
+    # Pattern 1: "1 Item Name    11,500" or "1 Item Name 11.500"
+    # Format: qty name price (BreadTalk style)
+    m = re.match(r'^(\d+)\s+(.+?)\s{2,}([\d.,]+)$', line)
+    if m:
+        qty, name, price = m.groups()
+        return make_item(name, int(qty), price)
+    
+    # Pattern 2: "1 Item Name 11,500" (single space)
+    m = re.match(r'^(\d+)\s+(.+?)\s+([\d]{1,3}[.,][\d]{3})$', line)
+    if m:
+        qty, name, price = m.groups()
+        return make_item(name, int(qty), price)
+    
+    # Pattern 3: "Item Name    11,500" (no qty)
+    m = re.match(r'^([A-Za-z].+?)\s{2,}([\d.,]+)$', line)
+    if m:
+        name, price = m.groups()
+        return make_item(name, 1, price)
+    
+    # Pattern 4: "Item Name x2 22,000" or "Item Name X2 22.000"
+    m = re.match(r'^(.+?)\s*[xX](\d+)\s+([\d.,]+)$', line)
+    if m:
+        name, qty, price = m.groups()
+        return make_item(name, int(qty), price)
+    
+    # Pattern 5: "Item Name 2x11,000 22,000" (qty x unit_price total)
+    m = re.match(r'^(.+?)\s+(\d+)\s*[xX]\s*([\d.,]+)\s+([\d.,]+)$', line)
+    if m:
+        name, qty, unit_price, total = m.groups()
+        return make_item(name, int(qty), total)
+    
+    # Pattern 6: "Item Name @ 11,000 x 2 22,000"
+    m = re.match(r'^(.+?)\s*@\s*([\d.,]+)\s*[xX]\s*(\d+)\s+([\d.,]+)$', line)
+    if m:
+        name, unit_price, qty, total = m.groups()
+        return make_item(name, int(qty), total)
+    
+    # Pattern 7: "Item Name Rp 11.500" or "Item Name Rp11,500"
+    m = re.match(r'^(.+?)\s+(?:Rp\.?|IDR)\s*([\d.,]+)$', line, re.IGNORECASE)
+    if m:
+        name, price = m.groups()
+        return make_item(name, 1, price)
+    
+    # Pattern 8: Simple "Item Name 11500" (no separator)
+    m = re.match(r'^([A-Za-z][A-Za-z\s]+?)\s+(\d{4,})$', line)
+    if m:
+        name, price = m.groups()
+        return make_item(name, 1, price)
+    
+    return None
+
+
+def make_item(name: str, qty: int, price_str: str) -> Optional[Dict[str, Any]]:
+    """Create item dict with validation."""
+    name = name.strip()
+    
+    # Clean name - remove trailing numbers/special chars
+    name = re.sub(r'[\d.,]+$', '', name).strip()
+    name = re.sub(r'^[\d\s]+', '', name).strip()
+    
+    if len(name) < 2:
+        return None
+    
+    # Parse price
+    price_clean = price_str.replace(".", "").replace(",", "")
+    if not price_clean.isdigit():
+        return None
+    
+    price = int(price_clean)
+    
+    # Validate price range (100 - 100jt)
+    if price < 100 or price > 100000000:
+        return None
+    
+    return {
+        "name": name,
+        "quantity": qty,
+        "price": price,
+        "selected": True
+    }
 
 
 def extract_tax_and_service(text: str) -> Tuple[Optional[Decimal], Optional[Decimal]]:
