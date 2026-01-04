@@ -1,6 +1,6 @@
 ﻿import { useState, useRef, useCallback, useEffect } from 'react'
 import { ocrApi } from '../lib/api'
-import { X, Upload, Camera, Loader2, Image, CheckCircle, AlertCircle, Sparkles, Zap, SwitchCamera, Circle, ShoppingCart, Receipt, Check, Cpu, Cloud, Plus, Edit2, Trash2, Calculator } from 'lucide-react'
+import { X, Upload, Camera, Loader2, Image, CheckCircle, AlertCircle, Sparkles, Zap, SwitchCamera, Circle, ShoppingCart, Receipt, Check, Cpu, Cloud, Plus, Edit2, Trash2, Calculator, Store } from 'lucide-react'
 
 interface ReceiptItem { name: string; quantity: number; price: number }
 interface OCRResult { amount: number | null; merchant_name: string | null; transaction_date: string | null; items: ReceiptItem[]; receipt_url?: string; success: boolean; message: string; ocr_provider?: string }
@@ -27,6 +27,8 @@ export function OCRUpload({ onClose, onComplete }: OCRUploadProps) {
   const [editingIndex, setEditingIndex] = useState<number | null>(null)
   const [manualTotal, setManualTotal] = useState('')
   const [useManualTotal, setUseManualTotal] = useState(false)
+  const [merchantName, setMerchantName] = useState('')
+  const [editingMerchant, setEditingMerchant] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -78,6 +80,7 @@ export function OCRUpload({ onClose, onComplete }: OCRUploadProps) {
       setOcrResult(result)
       setEditableItems(result.items || [])
       setSelectedItems(new Set(result.items?.map((_, i) => i) || []))
+      setMerchantName(result.merchant_name || '')
       if (result.amount) setManualTotal(result.amount.toString())
       setMode('result')
     } catch (err: any) { setError(err.response?.data?.detail || 'Gagal memproses gambar') }
@@ -87,7 +90,7 @@ export function OCRUpload({ onClose, onComplete }: OCRUploadProps) {
   const toggleItem = (index: number) => { const newSelected = new Set(selectedItems); if (newSelected.has(index)) newSelected.delete(index); else newSelected.add(index); setSelectedItems(newSelected) }
   const calculateSelectedTotal = () => editableItems.filter((_, i) => selectedItems.has(i)).reduce((sum, item) => sum + Number(item.price), 0)
   const formatCurrency = (amount: number) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(amount)
-  const resetToSelect = () => { stopCamera(); setFile(null); setPreview(null); setMode('select'); setError(''); setOcrResult(null); setEditableItems([]); setUseManualTotal(false); setManualTotal('') }
+  const resetToSelect = () => { stopCamera(); setFile(null); setPreview(null); setMode('select'); setError(''); setOcrResult(null); setEditableItems([]); setUseManualTotal(false); setManualTotal(''); setMerchantName(''); setEditingMerchant(false) }
   const handleClose = () => { stopCamera(); onClose() }
 
   const addItem = () => {
@@ -185,26 +188,35 @@ export function OCRUpload({ onClose, onComplete }: OCRUploadProps) {
 
               <div className="p-3 bg-amber-50 rounded-xl text-xs text-amber-700 flex items-start gap-2">
                 <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                <span>AI mungkin tidak 100% akurat. Silakan periksa dan edit item jika perlu.</span>
+                <span>AI mungkin tidak 100% akurat. Silakan periksa dan edit jika perlu.</span>
               </div>
 
-              {ocrResult.merchant_name && (
-                <div className="p-3 bg-gray-50 rounded-xl">
+              <div className="p-3 bg-gray-50 rounded-xl">
+                <div className="flex items-center gap-2 mb-1">
+                  <Store className="w-4 h-4 text-gray-400" />
                   <p className="text-xs text-gray-500">Merchant</p>
-                  <p className="font-semibold text-gray-800">{ocrResult.merchant_name}</p>
                 </div>
-              )}
+                {editingMerchant ? (
+                  <div className="flex items-center gap-2">
+                    <input type="text" value={merchantName} onChange={(e) => setMerchantName(e.target.value)} placeholder="Nama merchant" className="flex-1 px-2 py-1 border rounded text-sm font-semibold" autoFocus />
+                    <button onClick={() => setEditingMerchant(false)} className="p-1 text-emerald-600 hover:text-emerald-700"><Check className="w-4 h-4" /></button>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between">
+                    <p className="font-semibold text-gray-800">{merchantName || '-'}</p>
+                    <button onClick={() => setEditingMerchant(true)} className="p-1 text-gray-400 hover:text-gray-600"><Edit2 className="w-4 h-4" /></button>
+                  </div>
+                )}
+              </div>
 
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <p className="text-sm font-medium text-gray-700 flex items-center gap-2"><ShoppingCart className="w-4 h-4" /> Item ({editableItems.length})</p>
-                  <div className="flex gap-2">
-                    {editableItems.length > 0 && (
-                      <button onClick={() => setSelectedItems(selectedItems.size === editableItems.length ? new Set() : new Set(editableItems.map((_, i) => i)))} className="text-xs text-emerald-600 hover:underline">
-                        {selectedItems.size === editableItems.length ? 'Hapus Semua' : 'Pilih Semua'}
-                      </button>
-                    )}
-                  </div>
+                  {editableItems.length > 0 && (
+                    <button onClick={() => setSelectedItems(selectedItems.size === editableItems.length ? new Set() : new Set(editableItems.map((_, i) => i)))} className="text-xs text-emerald-600 hover:underline">
+                      {selectedItems.size === editableItems.length ? 'Hapus Semua' : 'Pilih Semua'}
+                    </button>
+                  )}
                 </div>
 
                 {editableItems.length > 0 ? (
@@ -283,7 +295,7 @@ export function OCRUpload({ onClose, onComplete }: OCRUploadProps) {
 
               <div className="flex gap-3">
                 <button onClick={resetToSelect} className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 rounded-xl font-medium text-gray-600">Scan Ulang</button>
-                <button onClick={() => onComplete({ amount: getFinalAmount(), merchant_name: ocrResult.merchant_name, transaction_date: ocrResult.transaction_date, items: editableItems.filter((_, i) => selectedItems.has(i)), receipt_url: ocrResult.receipt_url })} className="flex-1 flex items-center justify-center gap-2 py-3 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl font-medium shadow-lg"><Sparkles className="w-5 h-5" /> Lanjutkan</button>
+                <button onClick={() => onComplete({ amount: getFinalAmount(), merchant_name: merchantName || null, transaction_date: ocrResult.transaction_date, items: editableItems.filter((_, i) => selectedItems.has(i)), receipt_url: ocrResult.receipt_url })} className="flex-1 flex items-center justify-center gap-2 py-3 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl font-medium shadow-lg"><Sparkles className="w-5 h-5" /> Lanjutkan</button>
               </div>
             </div>
           )}
