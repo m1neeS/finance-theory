@@ -1,7 +1,6 @@
 """
-OCR Router
-API endpoints for receipt image processing.
-Supports dual OCR providers: Tesseract (free) and Google Vision API (paid).
+OCR Router - Receipt image processing endpoints.
+Supports: Tesseract (default, free) and Google Vision API (premium)
 """
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request
@@ -17,71 +16,59 @@ router = APIRouter(prefix="/api/ocr", tags=["OCR"])
 limiter = Limiter(key_func=get_remote_address)
 
 
-@router.get("/provider", response_model=OCRProviderInfo)
-async def get_ocr_provider(
-    current_user: dict = Depends(get_current_user)
-):
-    """
-    Get information about current OCR provider configuration.
-    
-    Returns:
-    - current_provider: "tesseract" (free) or "google_vision" (paid)
-    - is_paid: whether current provider is paid
-    - description: human-readable description
-    """
+@router.get("/provider")
+async def get_ocr_provider(current_user: dict = Depends(get_current_user)):
+    """Get available OCR providers and their status."""
     return ocr_service.get_ocr_provider_info()
 
 
-@router.post("/process", response_model=OCRResult)
-@limiter.limit("10/minute")  # OCR is expensive, limit heavily
+@router.post("/process")
+@limiter.limit("10/minute")
 async def process_receipt(
     request: Request,
-    file: UploadFile = File(..., description="Receipt image (JPG, PNG, PDF)"),
+    file: UploadFile = File(...),
+    provider: str = Form(default="tesseract"),
     current_user: dict = Depends(get_current_user)
 ):
     """
-    Upload and process receipt image using configured OCR provider.
+    Process receipt image with OCR.
     
-    OCR Provider is configured via OCR_PROVIDER environment variable:
-    - "tesseract": Free, local processing (requires Tesseract installed)
-    - "google_vision": Paid, cloud-based (requires GOOGLE_VISION_API_KEY)
+    Args:
+        file: Receipt image (JPG, PNG, PDF)
+        provider: "tesseract" (default, free) or "google_vision" (premium)
     
-    Returns extracted transaction data for user confirmation.
+    Returns: Extracted transaction data
     """
-    # Validate file
     content = await file.read()
     is_valid, error_msg = ocr_service.validate_file(file.filename, len(content))
     
     if not is_valid:
         raise HTTPException(status_code=400, detail=error_msg)
     
-    # Upload to storage
-    receipt_url = await ocr_service.upload_receipt(
-        user_id=current_user["id"],
-        file_content=content,
-        filename=file.filename
-    )
+    # Validate provider
+    if provider not in ["tesseract", "google_vision"]:
+        provider = "tesseract"
     
-    # Process image with configured OCR provider
-    result = await ocr_service.process_receipt_image(content, receipt_url)
-    
-    return result
-
-
-@router.post("/extract", response_model=OCRResult)
-@limiter.limit("20/minute")
-async def extract_from_text(
-    request: Request,
-    text: str = Form(..., description="OCR text to extract data from"),
-    receipt_url: Optional[str] = Form(None, description="Receipt image URL"),
-    current_user: dict = Depends(get_current_user)
-):
-    """
-    Extract transaction data from pre-extracted OCR text.
-    Use this if you already have OCR text from another source.
-    """
-    if not text.strip():
-        raise HTTPException(status_code=400, detail="OCR text cannot be empty")
-    
-    result = await ocr_service.process_receipt(text, receipt_url)
-    return result
+    try:
+        result = await ocr_service.process_receipt(
+            user_id=current_user["id"],
+            file_content=content,
+            filename=file.filename,
+            provider=provider
+        )
+        
+        return {
+            "success": True,
+            "message": "Receipt processed successfully",
+            "amount": result.get("amount"),
+            "merchant_name": result.get("merchant"),
+            "transaction_date": result.get("date"),
+            "items": result.get("items", []),
+            "tax": result.get("tax"),
+            "service_charge": result.get("service_charge"),
+            "receipt_url": result.get("receipt_url"),
+            "raw_text": result.get("raw_text"),
+            "ocr_provider": result.get("ocr_provider")
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"OCR processing failed: {str(e)}")

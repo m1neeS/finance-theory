@@ -43,9 +43,10 @@ export const categoryApi = {
 }
 
 export const ocrApi = {
-  scan: (file: File) => {
+  scan: (file: File, provider: string = 'tesseract') => {
     const formData = new FormData()
     formData.append('file', file)
+    formData.append('provider', provider)
     return api.post('/ocr/process', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     })
