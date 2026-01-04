@@ -429,6 +429,7 @@ def extract_merchant(text: str) -> Optional[str]:
 def extract_items(text: str) -> list:
     """
     Extract individual items from receipt text.
+    Improved patterns for Indonesian receipts (minimarket, restaurant, cafe).
     Returns list of dicts with: name, quantity, unit_price, total_price
     """
     items = []
@@ -440,9 +441,13 @@ def extract_items(text: str) -> list:
         'service', 'diskon', 'discount', 'tunai', 'cash', 'debit', 'credit', 'kartu',
         'kembalian', 'change', 'bayar', 'payment', 'tanggal', 'date', 'waktu', 'time',
         'kasir', 'cashier', 'nota', 'receipt', 'struk', 'terima kasih', 'thank you',
-        'member', 'customer', 'pelanggan', 'no.', 'telp', 'phone', 'alamat', 'address',
-        'jl.', 'jalan', 'rp', 'idr', '---', '===', '***', 'qty', 'harga', 'jumlah'
+        'member', 'customer', 'pelanggan', 'telp', 'phone', 'alamat', 'address',
+        'jl.', 'jalan', '---', '===', '***', 'harga', 'jumlah', 'npwp', 'invoice',
+        'order', 'table', 'meja', 'tamu', 'guest', 'server', 'bill', 'ref', 'trx'
     ]
+    
+    # Skip exact matches (header/footer lines)
+    skip_exact = ['qty', 'no.', 'rp', 'idr', 'item', 'price', 'amount']
     
     for line in lines:
         line_clean = line.strip()
@@ -452,36 +457,54 @@ def extract_items(text: str) -> list:
         if not line_clean or len(line_clean) < 3:
             continue
         
-        # Skip lines with skip keywords
-        if any(keyword in line_lower for keyword in skip_keywords):
+        # Skip exact matches
+        if line_lower in skip_exact:
             continue
         
-        # Skip lines that are just numbers or symbols
-        if re.match(r'^[\d\s.,\-=*]+$', line_clean):
+        # Skip lines with skip keywords (but be more careful)
+        skip_line = False
+        for keyword in skip_keywords:
+            # Only skip if keyword is at start or is significant part of line
+            if line_lower.startswith(keyword) or (keyword in line_lower and len(keyword) > 4):
+                skip_line = True
+                break
+        if skip_line:
             continue
         
-        # Try to extract item with price
-        # Pattern 1: "Item Name    25.000" or "Item Name    25,000"
-        pattern1 = r'^(.+?)\s{2,}([\d.,]+)$'
+        # Skip lines that are just numbers, symbols, or separators
+        if re.match(r'^[\d\s.,\-=*_|:]+$', line_clean):
+            continue
+        
+        # Skip very short lines that are likely not items
+        if len(line_clean) < 5:
+            continue$'
+        # Try to extract item with price using multiple patterns
+        extracted = False
+        
+        # Pattern 1: "Item Name    25.000" or "Item Name    25,000" (multiple spaces)
+        pattern1 = r'^(.+?)\s{2,}([\d]{1,3}(?:[.,]\d{3})*|\d{4,})$'
         match = re.match(pattern1, line_clean)
         if match:
             name = match.group(1).strip()
             price_str = match.group(2).replace(".", "").replace(",", "")
             try:
                 price = Decimal(price_str)
-                if 100 <= price <= 100000000 and len(name) > 2:  # Reasonable price range
+                if 500 <= price <= 100000000 and len(name) > 2:
                     items.append({
                         "name": name,
                         "quantity": 1,
                         "unit_price": None,
                         "total_price": price
                     })
-                    continue
+                    extracted = True
             except:
                 pass
         
+        if extracted:
+            continue
+        
         # Pattern 2: "2 x Item Name @ 15.000    30.000" or "2x Item @ 15000 = 30000"
-        pattern2 = r'^(\d+)\s*[xX]\s*(.+?)\s*[@]\s*([\d.,]+)\s*[=]?\s*([\d.,]+)?$'
+        pattern2 = r'^(\d+)\s*[xX]\s*(.+?)\s*[@]\s*([\d.,]+)\s*[=]?\s*([\d.,]+)?'$'
         match = re.match(pattern2, line_clean)
         if match:
             qty = int(match.group(1))
@@ -491,19 +514,22 @@ def extract_items(text: str) -> list:
             try:
                 unit_price = Decimal(unit_price_str)
                 total_price = Decimal(total_str) if total_str else unit_price * qty
-                if 100 <= total_price <= 100000000 and len(name) > 1:
+                if 500 <= total_price <= 100000000 and len(name) > 1:
                     items.append({
                         "name": name,
                         "quantity": qty,
                         "unit_price": unit_price,
                         "total_price": total_price
                     })
-                    continue
+                    extracted = True
             except:
                 pass
         
+        if extracted:
+            continue
+        
         # Pattern 3: "Item Name 2 @ 15.000" (qty after name)
-        pattern3 = r'^(.+?)\s+(\d+)\s*[@xX]\s*([\d.,]+)$'
+        pattern3 = r'^(.+?)\s+(\d+)\s*[@xX]\s*([\d.,]+)'$'
         match = re.match(pattern3, line_clean)
         if match:
             name = match.group(1).strip()
@@ -512,35 +538,104 @@ def extract_items(text: str) -> list:
             try:
                 unit_price = Decimal(unit_price_str)
                 total_price = unit_price * qty
-                if 100 <= total_price <= 100000000 and len(name) > 1:
+                if 500 <= total_price <= 100000000 and len(name) > 1:
                     items.append({
                         "name": name,
                         "quantity": qty,
                         "unit_price": unit_price,
                         "total_price": total_price
                     })
-                    continue
+                    extracted = True
             except:
                 pass
         
+        if extracted:
+            continue
+        
         # Pattern 4: Simple "Item Name   Rp 25.000" or "Item Name   Rp25000"
-        pattern4 = r'^(.+?)\s+(?:Rp\.?|IDR)\s*([\d.,]+)$'
+        pattern4 = r'^(.+?)\s+(?:Rp\.?|IDR)\s*([\d.,]+)'$'
         match = re.match(pattern4, line_clean, re.IGNORECASE)
         if match:
             name = match.group(1).strip()
             price_str = match.group(2).replace(".", "").replace(",", "")
             try:
                 price = Decimal(price_str)
-                if 100 <= price <= 100000000 and len(name) > 2:
+                if 500 <= price <= 100000000 and len(name) > 2:
                     items.append({
                         "name": name,
                         "quantity": 1,
                         "unit_price": None,
                         "total_price": price
                     })
-                    continue
+                    extracted = True
             except:
                 pass
+        
+        if extracted:
+            continue
+        
+        # Pattern 5: "1 Item Name 25.000" (qty at start, Indonesian minimarket style)
+        pattern5 = r'^(\d+)\s+(.+?)\s+([\d]{1,3}(?:[.,]\d{3})*|\d{4,})$'
+        match = re.match(pattern5, line_clean)
+        if match:
+            qty = int(match.group(1))
+            name = match.group(2).strip()
+            price_str = match.group(3).replace(".", "").replace(",", "")
+            try:
+                price = Decimal(price_str)
+                if 500 <= price <= 100000000 and len(name) > 2 and qty <= 100:
+                    items.append({
+                        "name": name,
+                        "quantity": qty,
+                        "unit_price": Decimal(price_str) // qty if qty > 1 else None,
+                        "total_price": price
+                    })
+                    extracted = True
+            except:
+                pass
+        
+        if extracted:
+            continue
+        
+        # Pattern 6: "Item Name 25000" (single space, no dots - common OCR output)
+        pattern6 = r'^([A-Za-z][A-Za-z\s]+?)\s+(\d{4,})$'
+        match = re.match(pattern6, line_clean)
+        if match:
+            name = match.group(1).strip()
+            price_str = match.group(2)
+            try:
+                price = Decimal(price_str)
+                if 500 <= price <= 100000000 and len(name) > 2:
+                    items.append({
+                        "name": name,
+                        "quantity": 1,
+                        "unit_price": None,
+                        "total_price": price
+                    })
+                    extracted = True
+            except:
+                pass
+        
+        if extracted:
+            continue
+        
+        # Pattern 7: Tab-separated "Item Name\t25.000"
+        if '\t' in line_clean:
+            parts = line_clean.split('\t')
+            if len(parts) >= 2:
+                name = parts[0].strip()
+                price_str = parts[-1].replace(".", "").replace(",", "").strip()
+                try:
+                    price = Decimal(price_str)
+                    if 500 <= price <= 100000000 and len(name) > 2:
+                        items.append({
+                            "name": name,
+                            "quantity": 1,
+                            "unit_price": None,
+                            "total_price": price
+                        })
+                except:
+                    pass
     
     return items
 
