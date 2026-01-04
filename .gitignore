@@ -3,6 +3,11 @@
 backend/.env
 frontend/.env
 
+# Test files with credentials
+backend/test_auth.py
+backend/test_ocr.py
+backend/get_token.py
+
 # Python
 venv/
 __pycache__/
