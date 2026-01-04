@@ -1,6 +1,6 @@
 """
 OCR Service - Receipt image processing and data extraction.
-Supports: Tesseract (default, free) and Google Vision API (premium, optional)
+Supports: Tesseract (default, free) and Google Vision API (premium)
 """
 
 import re
@@ -8,7 +8,7 @@ import base64
 import httpx
 from decimal import Decimal
 from datetime import date
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict, Any
 from uuid import uuid4
 from app.config import settings
 from app.services.supabase_client import supabase
@@ -48,63 +48,41 @@ async def upload_receipt(user_id: str, file_content: bytes, filename: str) -> Op
 
 
 def preprocess_image(image):
-    """Preprocess image for better OCR accuracy."""
     from PIL import Image, ImageEnhance, ImageFilter
-    
-    # Convert to RGB if needed
     if image.mode not in ('RGB', 'L'):
         image = image.convert('RGB')
-    
-    # Resize if too small
     min_width = 1200
     if image.width < min_width:
         ratio = min_width / image.width
         new_size = (int(image.width * ratio), int(image.height * ratio))
         image = image.resize(new_size, Image.Resampling.LANCZOS)
-    
-    # Convert to grayscale
     if image.mode != 'L':
         image = image.convert('L')
-    
-    # Enhance contrast
     enhancer = ImageEnhance.Contrast(image)
     image = enhancer.enhance(1.8)
-    
-    # Enhance sharpness
     enhancer = ImageEnhance.Sharpness(image)
     image = enhancer.enhance(2.0)
-    
-    # Denoise
     image = image.filter(ImageFilter.MedianFilter(size=3))
-    
     return image
 
 
 async def ocr_with_tesseract(image_content: bytes) -> str:
-    """Extract text using Tesseract OCR (default, free)."""
     try:
         import pytesseract
         from PIL import Image
         import io
-        
         image = Image.open(io.BytesIO(image_content))
-        
-        # Try with preprocessing first
         processed = preprocess_image(image)
         config = r'--psm 6 --oem 3 -c preserve_interword_spaces=1'
-        
         try:
             text = pytesseract.image_to_string(processed, lang='ind+eng', config=config)
         except:
             text = pytesseract.image_to_string(processed, lang='eng', config=config)
-        
-        # If result is poor, try original image
         if not text.strip() or len(text.strip()) < 20:
             try:
                 text = pytesseract.image_to_string(image, lang='ind+eng', config=config)
             except:
                 text = pytesseract.image_to_string(image, lang='eng', config=config)
-        
         return text
     except ImportError:
         raise Exception("Tesseract not available")
@@ -113,11 +91,9 @@ async def ocr_with_tesseract(image_content: bytes) -> str:
 
 
 async def ocr_with_google_vision(image_content: bytes) -> str:
-    """Extract text using Google Cloud Vision API (premium)."""
     api_key = getattr(settings, 'GOOGLE_VISION_API_KEY', None)
     if not api_key:
         raise Exception("Google Vision API key not configured")
-    
     base64_image = base64.b64encode(image_content).decode("utf-8")
     request_body = {
         "requests": [{
@@ -125,15 +101,11 @@ async def ocr_with_google_vision(image_content: bytes) -> str:
             "features": [{"type": "TEXT_DETECTION", "maxResults": 1}]
         }]
     }
-    
     async with httpx.AsyncClient() as client:
-        response = await client.post(
-            f"https://vision.googleapis.com/v1/images:annotate?key={api_key}",
-            json=request_body, timeout=30.0
-        )
+        url = f"https://vision.googleapis.com/v1/images:annotate?key={api_key}"
+        response = await client.post(url, json=request_body, timeout=30.0)
         if response.status_code != 200:
             raise Exception(f"Google Vision error: {response.text}")
-        
         result = response.json()
         if "responses" in result and result["responses"]:
             annotations = result["responses"][0].get("textAnnotations", [])
@@ -143,18 +115,20 @@ async def ocr_with_google_vision(image_content: bytes) -> str:
 
 
 async def perform_ocr(image_content: bytes, provider: str = "tesseract") -> str:
-    """Perform OCR with specified provider. Default: tesseract"""
     if provider == "google_vision":
         return await ocr_with_google_vision(image_content)
     return await ocr_with_tesseract(image_content)
 
 
 def extract_amount(text: str) -> Optional[Decimal]:
-    """Extract total amount from receipt."""
+    amount_keywords = r'(?:TOTAL|GRAND\s*TOTAL|AMOUNT|JUMLAH|BAYAR|TUNAI|CASH|DEBIT|KREDIT|PAYMENT)'
+    currency = r'(?:Rp\.?|IDR)?'
+    number = r'([\d.,]+)'
+    
     patterns = [
-        r'(?:TOTAL|GRAND\s*TOTAL|AMOUNT|JUMLAH|BAYAR|TUNAI|CASH|DEBIT|KREDIT|PAYMENT)[\s:]*(?:Rp\.?|IDR)?\s*([\d.,]+)',
-        r'(?:Rp\.?|IDR)\s*([\d.,]+)\s*(?:TOTAL|GRAND|BAYAR)',
-        r'(?:TOTAL|GRAND\s*TOTAL)[\s:]*(?:Rp\.?|IDR)?\s*([\d.,]+)',
+        amount_keywords + r'[\s:]*' + currency + r'\s*' + number,
+        currency + r'\s*' + number + r'\s*(?:TOTAL|GRAND|BAYAR)',
+        r'(?:TOTAL|GRAND\s*TOTAL)[\s:]*' + currency + r'\s*' + number,
     ]
     
     amounts = []
@@ -171,7 +145,6 @@ def extract_amount(text: str) -> Optional[Decimal]:
     if amounts:
         return max(amounts)
     
-    # Fallback: find largest number
     all_amounts = re.findall(r'([\d]{1,3}(?:[.,]\d{3})+)', text)
     parsed = []
     for amt in all_amounts:
@@ -186,12 +159,12 @@ def extract_amount(text: str) -> Optional[Decimal]:
 
 
 def extract_date(text: str) -> Optional[date]:
-    """Extract date from receipt."""
+    month_pattern = '|'.join(INDONESIAN_MONTHS.keys())
     patterns = [
         (r'(\d{1,2})[/-](\d{1,2})[/-](\d{4})', 'dmy'),
         (r'(\d{4})[/-](\d{1,2})[/-](\d{1,2})', 'ymd'),
         (r'(\d{1,2})[/-](\d{1,2})[/-](\d{2})\b', 'dmy_short'),
-        (r'(\d{1,2})\s+(' + '|'.join(INDONESIAN_MONTHS.keys()) + r')\s+(\d{4})', 'indo'),
+        (r'(\d{1,2})\s+(' + month_pattern + r')\s+(\d{4})', 'indo'),
     ]
     
     for pattern, fmt in patterns:
@@ -215,119 +188,104 @@ def extract_date(text: str) -> Optional[date]:
 
 
 def extract_merchant(text: str) -> Optional[str]:
-    """Extract merchant name from receipt."""
     lines = text.strip().split('\n')
     skip_words = ['struk', 'receipt', 'invoice', 'nota', 'kasir', 'tanggal', 'date', 'waktu', 'time', 'npwp']
+    digits_only_pattern = re.compile(r'^[\d\s:/-]+$')
     
     for line in lines[:5]:
         line = line.strip()
         if len(line) > 3 and not any(word in line.lower() for word in skip_words):
-            if not re.match(r'^[\d\s:/-]+$', line):
+            if not digits_only_pattern.match(line):
                 return line[:100]
     return None
 
 
-def extract_items(text: str) -> list:
-    """Extract items from receipt with multiple patterns."""
+def extract_items(text: str) -> List[Dict[str, Any]]:
     items = []
-    lines = text.split('\n')
+    lines = text.strip().split('\n')
     
     skip_keywords = [
-        'TOTAL', 'SUBTOTAL', 'GRAND', 'TAX', 'PPN', 'PAJAK', 'DISKON', 'DISCOUNT',
-        'TUNAI', 'CASH', 'KEMBALI', 'CHANGE', 'TERIMA KASIH', 'THANK', 'STRUK',
-        'RECEIPT', 'INVOICE', 'NOTA', 'KASIR', 'TANGGAL', 'DATE', 'WAKTU', 'TIME',
-        'ALAMAT', 'ADDRESS', 'TELP', 'PHONE', 'NPWP', 'MEMBER', 'CARD'
+        'total', 'subtotal', 'sub total', 'grand', 'tax', 'pajak', 'ppn', 'service',
+        'diskon', 'discount', 'tunai', 'cash', 'kembalian', 'change', 'bayar',
+        'payment', 'debit', 'kredit', 'credit', 'card', 'kartu', 'member',
+        'tanggal', 'date', 'waktu', 'time', 'kasir', 'cashier', 'struk', 'receipt'
     ]
+    
+    # Pattern: name qty x price total
+    p1 = re.compile(r'^(.+?)\s+(\d+)\s*[xX]\s*([\d.,]+)\s+([\d.,]+)$')
+    # Pattern: name price x qty total
+    p2 = re.compile(r'^(.+?)\s+([\d.,]+)\s*[xX]\s*(\d+)\s+([\d.,]+)$')
+    # Pattern: qty name price total
+    p3 = re.compile(r'^(\d+)\s+(.+?)\s+([\d.,]+)\s+([\d.,]+)$')
+    # Pattern: name total (simple)
+    p4 = re.compile(r'^(.+?)\s{2,}([\d.,]+)$')
+    # Pattern: name @ price x qty total
+    p5 = re.compile(r'^(.+?)\s+@\s*([\d.,]+)\s*[xX]\s*(\d+)\s+([\d.,]+)$')
+    
+    all_patterns = [(p1, 0), (p2, 1), (p3, 2), (p4, 3), (p5, 4)]
     
     for line in lines:
         line = line.strip()
-        if not line or len(line) < 4:
+        if not line or len(line) < 3:
+            continue
+        if any(kw in line.lower() for kw in skip_keywords):
             continue
         
-        # Skip lines with keywords
-        if any(kw in line.upper() for kw in skip_keywords):
-            continue
-        
-        # Skip separator lines
-        if re.match(r'^[-=*_]+$', line):
-            continue
-        
-        # Pattern 1: "Item Name    25.000" (spaces separator)
-        match = re.match(r'^(.+?)\s{2,}([\d.,]+)$', line)
-        if match:
-            name, price = match.groups()
-            name = name.strip()
-            if len(name) > 2 and not re.match(r'^[\d\s]+$', name):
+        for pattern, idx in all_patterns:
+            match = pattern.match(line)
+            if match:
+                groups = match.groups()
                 try:
-                    price_clean = price.replace('.', '').replace(',', '')
-                    if price_clean.isdigit() and int(price_clean) >= 100:
-                        items.append({"name": name[:100], "price": int(price_clean), "quantity": 1})
+                    if idx == 0:
+                        name, qty, price, total = groups
+                        qty = int(qty)
+                    elif idx == 1:
+                        name, price, qty, total = groups
+                        qty = int(qty)
+                    elif idx == 2:
+                        qty, name, price, total = groups
+                        qty = int(qty)
+                    elif idx == 3:
+                        name, total = groups
+                        qty = 1
+                        price = total
+                    elif idx == 4:
+                        name, price, qty, total = groups
+                        qty = int(qty)
+                    
+                    name = name.strip()
+                    if len(name) < 2:
                         continue
-                except:
-                    pass
-        
-        # Pattern 2: "2 x Item @ 15.000  30.000"
-        match = re.match(r'^(\d+)\s*[xX]\s*(.+?)\s*@\s*[\d.,]+\s+([\d.,]+)$', line)
-        if match:
-            qty, name, total = match.groups()
-            name = name.strip()
-            if len(name) > 2:
-                try:
-                    total_clean = total.replace('.', '').replace(',', '')
-                    if total_clean.isdigit() and int(total_clean) >= 100:
-                        items.append({"name": name[:100], "price": int(total_clean), "quantity": int(qty)})
+                    
+                    total_clean = total.replace(".", "").replace(",", "")
+                    if not total_clean.isdigit():
                         continue
-                except:
-                    pass
-        
-        # Pattern 3: "Item Name Rp 25.000"
-        match = re.match(r'^(.+?)\s+(?:Rp\.?|IDR)\s*([\d.,]+)$', line, re.IGNORECASE)
-        if match:
-            name, price = match.groups()
-            name = name.strip()
-            if len(name) > 2 and not re.match(r'^[\d\s]+$', name):
-                try:
-                    price_clean = price.replace('.', '').replace(',', '')
-                    if price_clean.isdigit() and int(price_clean) >= 100:
-                        items.append({"name": name[:100], "price": int(price_clean), "quantity": 1})
+                    total_val = int(total_clean)
+                    
+                    if total_val < 100 or total_val > 100000000:
                         continue
-                except:
-                    pass
-        
-        # Pattern 4: "1 Item Name 25.000" (qty at start)
-        match = re.match(r'^(\d+)\s+(.+?)\s+([\d.,]+)$', line)
-        if match:
-            qty, name, price = match.groups()
-            name = name.strip()
-            if len(name) > 2 and not re.match(r'^[\d\s@xX]+$', name):
-                try:
-                    price_clean = price.replace('.', '').replace(',', '')
-                    if price_clean.isdigit() and int(price_clean) >= 100:
-                        items.append({"name": name[:100], "price": int(price_clean), "quantity": int(qty)})
-                        continue
-                except:
-                    pass
-        
-        # Pattern 5: "Item Name 25000" (no dots)
-        match = re.match(r'^(.+?)\s+(\d{4,})$', line)
-        if match:
-            name, price = match.groups()
-            name = name.strip()
-            if len(name) > 2 and not re.match(r'^[\d\s]+$', name):
-                try:
-                    if int(price) >= 100:
-                        items.append({"name": name[:100], "price": int(price), "quantity": 1})
-                except:
-                    pass
+                    
+                    items.append({
+                        "name": name,
+                        "quantity": qty,
+                        "price": total_val,
+                        "selected": True
+                    })
+                    break
+                except (ValueError, IndexError):
+                    continue
     
     return items
 
 
 def extract_tax_and_service(text: str) -> Tuple[Optional[Decimal], Optional[Decimal]]:
-    """Extract tax and service charge."""
-    tax = service = None
+    tax = None
+    service = None
     
-    tax_match = re.search(r'(?:TAX|PPN|PAJAK|VAT)[\s:]*(?:Rp\.?|IDR)?\s*([\d.,]+)', text, re.IGNORECASE)
+    tax_pattern = re.compile(r'(?:TAX|PAJAK|PPN|VAT)[\s:]*(?:Rp\.?|IDR)?\s*([\d.,]+)', re.IGNORECASE)
+    service_pattern = re.compile(r'(?:SERVICE|SERVIS|SVC)[\s:]*(?:Rp\.?|IDR)?\s*([\d.,]+)', re.IGNORECASE)
+    
+    tax_match = tax_pattern.search(text)
     if tax_match:
         try:
             clean = tax_match.group(1).replace(".", "").replace(",", "")
@@ -336,7 +294,7 @@ def extract_tax_and_service(text: str) -> Tuple[Optional[Decimal], Optional[Deci
         except:
             pass
     
-    service_match = re.search(r'(?:SERVICE|SERVIS|SC)[\s:]*(?:Rp\.?|IDR)?\s*([\d.,]+)', text, re.IGNORECASE)
+    service_match = service_pattern.search(text)
     if service_match:
         try:
             clean = service_match.group(1).replace(".", "").replace(",", "")
@@ -348,49 +306,37 @@ def extract_tax_and_service(text: str) -> Tuple[Optional[Decimal], Optional[Deci
     return tax, service
 
 
-async def process_receipt_image(image_content: bytes, provider: str = "tesseract") -> dict:
-    """Process receipt and extract data."""
+async def process_receipt_image(image_content: bytes, provider: str = "tesseract") -> Dict[str, Any]:
     raw_text = await perform_ocr(image_content, provider)
     
     amount = extract_amount(raw_text)
     transaction_date = extract_date(raw_text)
     merchant = extract_merchant(raw_text)
     items = extract_items(raw_text)
-    tax, service = extract_tax_and_service(raw_text)
+    tax, service_charge = extract_tax_and_service(raw_text)
     
     return {
-        "raw_text": raw_text,
         "amount": float(amount) if amount else None,
         "date": transaction_date.isoformat() if transaction_date else None,
         "merchant": merchant,
         "items": items,
         "tax": float(tax) if tax else None,
-        "service_charge": float(service) if service else None,
+        "service_charge": float(service_charge) if service_charge else None,
+        "raw_text": raw_text,
         "ocr_provider": provider
     }
 
 
-async def process_receipt(
-    user_id: str,
-    file_content: bytes,
-    filename: str,
-    provider: str = "tesseract"
-) -> dict:
-    """Full receipt processing: upload, OCR, extract."""
-    is_valid, error_msg = validate_file(filename, len(file_content))
-    if not is_valid:
-        raise ValueError(error_msg)
-    
+async def process_receipt(user_id: str, file_content: bytes, filename: str, provider: str = "tesseract") -> Dict[str, Any]:
     receipt_url = await upload_receipt(user_id, file_content, filename)
-    ocr_result = await process_receipt_image(file_content, provider)
-    ocr_result["receipt_url"] = receipt_url
-    
-    return ocr_result
+    result = await process_receipt_image(file_content, provider)
+    result["receipt_url"] = receipt_url
+    return result
 
 
-def get_ocr_provider_info() -> dict:
-    """Get available OCR providers info."""
+def get_ocr_provider_info() -> Dict[str, Any]:
     google_available = bool(getattr(settings, 'GOOGLE_VISION_API_KEY', None))
+    
     return {
         "providers": [
             {
@@ -408,5 +354,5 @@ def get_ocr_provider_info() -> dict:
                 "is_default": False
             }
         ],
-        "default": "tesseract"
+        "default_provider": "tesseract"
     }
