@@ -8,9 +8,10 @@ import {
 
 interface ProfileSettingsProps {
   onClose: () => void
+  embedded?: boolean
 }
 
-export function ProfileSettings({ onClose }: ProfileSettingsProps) {
+export function ProfileSettings({ onClose, embedded = false }: ProfileSettingsProps) {
   const { user, signOut } = useAuth()
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -65,6 +66,87 @@ export function ProfileSettings({ onClose }: ProfileSettingsProps) {
     if (displayName) return displayName.charAt(0).toUpperCase()
     if (user?.email) return user.email.charAt(0).toUpperCase()
     return 'U'
+  }
+
+  if (embedded) {
+    return (
+      <div className="space-y-6">
+        {/* Header */}
+        <div className="text-center mb-8">
+          <h1 className="text-2xl font-bold text-gray-800 mb-2">Profil Saya</h1>
+          <p className="text-gray-400">Kelola informasi akun Anda</p>
+        </div>
+
+        {loading ? (
+          <div className="flex items-center justify-center py-12">
+            <Loader2 className="w-8 h-8 text-violet-500 animate-spin" />
+          </div>
+        ) : (
+          <>
+            {/* Avatar Section */}
+            <div className="flex flex-col items-center">
+              <div className="relative">
+                {avatarUrl ? (
+                  <img 
+                    src={avatarUrl} 
+                    alt="Avatar" 
+                    className="w-24 h-24 rounded-full object-cover border-4 border-violet-100 shadow-lg"
+                  />
+                ) : (
+                  <div className="w-24 h-24 bg-gradient-to-br from-violet-400 to-purple-500 rounded-full flex items-center justify-center text-white text-3xl font-bold shadow-lg border-4 border-violet-100">
+                    {getInitial()}
+                  </div>
+                )}
+              </div>
+              <h2 className="mt-4 text-xl font-bold text-gray-800">{displayName || user?.email?.split('@')[0]}</h2>
+              <p className="text-gray-400 text-sm">{user?.email}</p>
+            </div>
+
+            {/* Quick Settings */}
+            <div className="bg-white rounded-2xl p-4 shadow-lg shadow-gray-100 border border-gray-100 space-y-3">
+              <button className="w-full flex items-center justify-between p-3 hover:bg-gray-50 rounded-xl transition-colors">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-violet-100 rounded-xl flex items-center justify-center">
+                    <User className="w-5 h-5 text-violet-600" />
+                  </div>
+                  <span className="font-medium text-gray-800">Edit Profil</span>
+                </div>
+                <ChevronRight className="w-5 h-5 text-gray-400" />
+              </button>
+              
+              <button className="w-full flex items-center justify-between p-3 hover:bg-gray-50 rounded-xl transition-colors">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center">
+                    <Bell className="w-5 h-5 text-blue-600" />
+                  </div>
+                  <span className="font-medium text-gray-800">Notifikasi</span>
+                </div>
+                <ChevronRight className="w-5 h-5 text-gray-400" />
+              </button>
+              
+              <button className="w-full flex items-center justify-between p-3 hover:bg-gray-50 rounded-xl transition-colors">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-green-100 rounded-xl flex items-center justify-center">
+                    <Shield className="w-5 h-5 text-green-600" />
+                  </div>
+                  <span className="font-medium text-gray-800">Keamanan</span>
+                </div>
+                <ChevronRight className="w-5 h-5 text-gray-400" />
+              </button>
+            </div>
+
+            {/* Logout */}
+            <button 
+              onClick={signOut}
+              className="w-full flex items-center justify-center gap-2 p-4 bg-rose-50 hover:bg-rose-100 rounded-2xl transition-colors text-rose-600 font-medium"
+            >
+              <LogOut className="w-5 h-5" />
+              Keluar dari Akun
+            </button>
+          </>
+        )}
+      </div>
+    )
   }
 
   return (

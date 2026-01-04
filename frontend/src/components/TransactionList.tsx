@@ -18,6 +18,7 @@ interface Transaction {
 interface TransactionListProps {
   onClose: () => void
   onRefresh: () => void
+  embedded?: boolean
 }
 
 const CATEGORY_ICONS: Record<string, string> = {
@@ -42,7 +43,7 @@ const getCategoryIcon = (name: string) => {
   return CATEGORY_ICONS.default
 }
 
-export function TransactionList({ onClose, onRefresh }: TransactionListProps) {
+export function TransactionList({ onClose, onRefresh, embedded = false }: TransactionListProps) {
   const [transactions, setTransactions] = useState<Transaction[]>([])
   const [loading, setLoading] = useState(true)
   const [searchQuery, setSearchQuery] = useState('')
@@ -129,19 +130,21 @@ export function TransactionList({ onClose, onRefresh }: TransactionListProps) {
   const totalExpense = filteredTransactions.filter(t => t.type === 'expense').reduce((sum, t) => sum + t.amount, 0)
 
   return (
-    <div className="fixed inset-0 bg-gradient-to-br from-violet-50 via-white to-cyan-50 z-50 overflow-hidden">
+    <div className={embedded ? "" : "fixed inset-0 bg-gradient-to-br from-violet-50 via-white to-cyan-50 z-50 overflow-hidden"}>
       {/* Header */}
-      <header className="bg-white/80 backdrop-blur-xl border-b border-gray-100 sticky top-0 z-10">
-        <div className="max-w-4xl mx-auto px-4 py-4">
+      <header className={embedded ? "mb-4" : "bg-white/80 backdrop-blur-xl border-b border-gray-100 sticky top-0 z-10"}>
+        <div className={embedded ? "" : "max-w-4xl mx-auto px-4 py-4"}>
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-3">
-              <button 
-                onClick={onClose}
-                className="p-2 hover:bg-gray-100 rounded-xl transition-colors"
-              >
-                <ChevronLeft className="w-5 h-5 text-gray-600" />
-              </button>
-              <h1 className="text-xl font-bold text-gray-800">Semua Transaksi</h1>
+              {!embedded && (
+                <button 
+                  onClick={onClose}
+                  className="p-2 hover:bg-gray-100 rounded-xl transition-colors"
+                >
+                  <ChevronLeft className="w-5 h-5 text-gray-600" />
+                </button>
+              )}
+              <h1 className="text-xl font-bold text-gray-800">{embedded ? 'Riwayat Transaksi' : 'Semua Transaksi'}</h1>
             </div>
             <button 
               onClick={fetchTransactions}
