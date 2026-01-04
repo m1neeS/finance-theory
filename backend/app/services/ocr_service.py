@@ -56,10 +56,53 @@ async def upload_receipt(user_id: str, file_content: bytes, filename: str) -> Op
 # OCR Provider Implementations
 # ============================================
 
+def preprocess_image(image):
+    """
+    Preprocess image for better OCR accuracy.
+    - Convert to grayscale
+    - Enhance contrast
+    - Reduce noise
+    - Resize if too small
+    """
+    from PIL import Image, ImageEnhance, ImageFilter
+    
+    # Convert to RGB if necessary (handle RGBA, P mode, etc.)
+    if image.mode not in ('RGB', 'L'):
+        image = image.convert('RGB')
+    
+    # Resize if image is too small (optimal for Tesseract: 300 DPI equivalent)
+    min_width = 1000
+    if image.width < min_width:
+        ratio = min_width / image.width
+        new_size = (int(image.width * ratio), int(image.height * ratio))
+        image = image.resize(new_size, Image.Resampling.LANCZOS)
+    
+    # Convert to grayscale
+    if image.mode != 'L':
+        image = image.convert('L')
+    
+    # Enhance contrast
+    enhancer = ImageEnhance.Contrast(image)
+    image = enhancer.enhance(1.5)
+    
+    # Enhance sharpness
+    enhancer = ImageEnhance.Sharpness(image)
+    image = enhancer.enhance(2.0)
+    
+    # Apply slight blur to reduce noise, then sharpen
+    image = image.filter(ImageFilter.MedianFilter(size=3))
+    
+    # Binarization - convert to black and white for cleaner text
+    threshold = 140
+    image = image.point(lambda x: 255 if x > threshold else 0, mode='1')
+    
+    return image
+
+
 async def ocr_with_tesseract(image_content: bytes) -> str:
     """
     Extract text from image using Tesseract OCR (FREE).
-    Requires pytesseract and Tesseract-OCR installed on system.
+    Includes image preprocessing for better accuracy.
     
     Install:
     - pip install pytesseract pillow
@@ -87,12 +130,43 @@ async def ocr_with_tesseract(image_content: bytes) -> str:
         # Convert bytes to PIL Image
         image = Image.open(io.BytesIO(image_content))
         
+        # Preprocess image for better OCR accuracy
+        processed_image = preprocess_image(image)
+        
+        # Tesseract config for better receipt recognition
+        # --psm 6: Assume uniform block of text
+        # --oem 3: Default OCR Engine Mode (LSTM + Legacy)
+        custom_config = r'--psm 6 --oem 3 -c preserve_interword_spaces=1'
+        
         # Extract text - try with Indonesian first, fallback to English only
         try:
-            text = pytesseract.image_to_string(image, lang='ind+eng')
+            text = pytesseract.image_to_string(
+                processed_image, 
+                lang='ind+eng',
+                config=custom_config
+            )
         except:
             # Fallback if Indonesian language pack not installed
-            text = pytesseract.image_to_string(image, lang='eng')
+            text = pytesseract.image_to_string(
+                processed_image, 
+                lang='eng',
+                config=custom_config
+            )
+        
+        # If preprocessing didn't help, try original image
+        if not text.strip() or len(text.strip()) < 10:
+            try:
+                text = pytesseract.image_to_string(
+                    image, 
+                    lang='ind+eng',
+                    config=custom_config
+                )
+            except:
+                text = pytesseract.image_to_string(
+                    image, 
+                    lang='eng',
+                    config=custom_config
+                )
         
         return text
     except ImportError:
@@ -174,23 +248,64 @@ async def perform_ocr(image_content: bytes) -> Tuple[str, str]:
 # ============================================
 
 def extract_amount(text: str) -> Optional[Decimal]:
-    """Extract monetary amount from OCR text."""
-    # Common patterns for Indonesian Rupiah
-    patterns = [
-        r"(?:Rp\.?|IDR)\s*([\d.,]+)",  # Rp 50.000 or IDR 50,000
-        r"(?:Total|TOTAL|Grand Total|GRAND TOTAL)[:\s]*([\d.,]+)",
-        r"([\d]{1,3}(?:[.,]\d{3})+)",  # 50.000 or 50,000
+    """Extract monetary amount from OCR text with improved patterns for Indonesian receipts."""
+    
+    # Normalize text - fix common OCR errors
+    text = text.replace('O', '0').replace('o', '0')  # Common OCR mistake
+    text = text.replace('l', '1').replace('I', '1')  # Common OCR mistake for 1
+    text = text.replace(' ', '')  # Remove spaces in numbers like "50 000"
+    
+    # Restore text for pattern matching (keep original for non-number parts)
+    original_text = text
+    
+    # Priority patterns - check these first (most specific)
+    priority_patterns = [
+        # Bank transfer patterns
+        r"(?:Nominal|NOMINAL)[:\s]*(?:Rp\.?|IDR)?\s*([\d.,]+)",
+        r"(?:Jumlah|JUMLAH)[:\s]*(?:Rp\.?|IDR)?\s*([\d.,]+)",
+        r"(?:Amount|AMOUNT)[:\s]*(?:Rp\.?|IDR)?\s*([\d.,]+)",
+        # Total patterns
+        r"(?:Total\s*(?:Bayar|Pembayaran|Belanja|Harga))[:\s]*(?:Rp\.?|IDR)?\s*([\d.,]+)",
+        r"(?:TOTAL\s*(?:BAYAR|PEMBAYARAN|BELANJA|HARGA))[:\s]*(?:Rp\.?|IDR)?\s*([\d.,]+)",
+        r"(?:Grand\s*Total|GRAND\s*TOTAL)[:\s]*(?:Rp\.?|IDR)?\s*([\d.,]+)",
+        r"(?:Total|TOTAL)[:\s]*(?:Rp\.?|IDR)?\s*([\d.,]+)",
+        # Rp patterns
+        r"(?:Rp\.?|IDR)\s*([\d.,]+)",
     ]
     
-    for pattern in patterns:
-        matches = re.findall(pattern, text, re.IGNORECASE)
+    for pattern in priority_patterns:
+        matches = re.findall(pattern, original_text, re.IGNORECASE)
         if matches:
-            # Get the largest amount (likely the total)
+            amounts = []
+            for match in matches:
+                clean = match.replace(".", "").replace(",", "").strip()
+                # Filter out unrealistic amounts (too small or too large)
+                try:
+                    amount = Decimal(clean)
+                    if 100 <= amount <= 100000000000:  # 100 to 100 billion
+                        amounts.append(amount)
+                except:
+                    continue
+            if amounts:
+                # For total patterns, return the match; for Rp patterns, return max
+                return max(amounts)
+    
+    # Fallback: find any large number that looks like money
+    fallback_patterns = [
+        r"([\d]{1,3}(?:[.,]\d{3})+)",  # 50.000 or 50,000
+        r"([\d]{4,})",  # Any number with 4+ digits
+    ]
+    
+    for pattern in fallback_patterns:
+        matches = re.findall(pattern, original_text)
+        if matches:
             amounts = []
             for match in matches:
                 clean = match.replace(".", "").replace(",", "")
                 try:
-                    amounts.append(Decimal(clean))
+                    amount = Decimal(clean)
+                    if 1000 <= amount <= 100000000000:  # 1000 to 100 billion
+                        amounts.append(amount)
                 except:
                     continue
             if amounts:
@@ -311,6 +426,189 @@ def extract_merchant(text: str) -> Optional[str]:
     return None
 
 
+def extract_items(text: str) -> list:
+    """
+    Extract individual items from receipt text.
+    Returns list of dicts with: name, quantity, unit_price, total_price
+    """
+    items = []
+    lines = text.strip().split("\n")
+    
+    # Skip keywords - lines containing these are not items
+    skip_keywords = [
+        'total', 'subtotal', 'sub total', 'grand total', 'pajak', 'tax', 'ppn', 'pb1',
+        'service', 'diskon', 'discount', 'tunai', 'cash', 'debit', 'credit', 'kartu',
+        'kembalian', 'change', 'bayar', 'payment', 'tanggal', 'date', 'waktu', 'time',
+        'kasir', 'cashier', 'nota', 'receipt', 'struk', 'terima kasih', 'thank you',
+        'member', 'customer', 'pelanggan', 'no.', 'telp', 'phone', 'alamat', 'address',
+        'jl.', 'jalan', 'rp', 'idr', '---', '===', '***', 'qty', 'harga', 'jumlah'
+    ]
+    
+    for line in lines:
+        line_clean = line.strip()
+        line_lower = line_clean.lower()
+        
+        # Skip empty lines
+        if not line_clean or len(line_clean) < 3:
+            continue
+        
+        # Skip lines with skip keywords
+        if any(keyword in line_lower for keyword in skip_keywords):
+            continue
+        
+        # Skip lines that are just numbers or symbols
+        if re.match(r'^[\d\s.,\-=*]+$', line_clean):
+            continue
+        
+        # Try to extract item with price
+        # Pattern 1: "Item Name    25.000" or "Item Name    25,000"
+        pattern1 = r'^(.+?)\s{2,}([\d.,]+)$'
+        match = re.match(pattern1, line_clean)
+        if match:
+            name = match.group(1).strip()
+            price_str = match.group(2).replace(".", "").replace(",", "")
+            try:
+                price = Decimal(price_str)
+                if 100 <= price <= 100000000 and len(name) > 2:  # Reasonable price range
+                    items.append({
+                        "name": name,
+                        "quantity": 1,
+                        "unit_price": None,
+                        "total_price": price
+                    })
+                    continue
+            except:
+                pass
+        
+        # Pattern 2: "2 x Item Name @ 15.000    30.000" or "2x Item @ 15000 = 30000"
+        pattern2 = r'^(\d+)\s*[xX]\s*(.+?)\s*[@]\s*([\d.,]+)\s*[=]?\s*([\d.,]+)?$'
+        match = re.match(pattern2, line_clean)
+        if match:
+            qty = int(match.group(1))
+            name = match.group(2).strip()
+            unit_price_str = match.group(3).replace(".", "").replace(",", "")
+            total_str = match.group(4).replace(".", "").replace(",", "") if match.group(4) else None
+            try:
+                unit_price = Decimal(unit_price_str)
+                total_price = Decimal(total_str) if total_str else unit_price * qty
+                if 100 <= total_price <= 100000000 and len(name) > 1:
+                    items.append({
+                        "name": name,
+                        "quantity": qty,
+                        "unit_price": unit_price,
+                        "total_price": total_price
+                    })
+                    continue
+            except:
+                pass
+        
+        # Pattern 3: "Item Name 2 @ 15.000" (qty after name)
+        pattern3 = r'^(.+?)\s+(\d+)\s*[@xX]\s*([\d.,]+)$'
+        match = re.match(pattern3, line_clean)
+        if match:
+            name = match.group(1).strip()
+            qty = int(match.group(2))
+            unit_price_str = match.group(3).replace(".", "").replace(",", "")
+            try:
+                unit_price = Decimal(unit_price_str)
+                total_price = unit_price * qty
+                if 100 <= total_price <= 100000000 and len(name) > 1:
+                    items.append({
+                        "name": name,
+                        "quantity": qty,
+                        "unit_price": unit_price,
+                        "total_price": total_price
+                    })
+                    continue
+            except:
+                pass
+        
+        # Pattern 4: Simple "Item Name   Rp 25.000" or "Item Name   Rp25000"
+        pattern4 = r'^(.+?)\s+(?:Rp\.?|IDR)\s*([\d.,]+)$'
+        match = re.match(pattern4, line_clean, re.IGNORECASE)
+        if match:
+            name = match.group(1).strip()
+            price_str = match.group(2).replace(".", "").replace(",", "")
+            try:
+                price = Decimal(price_str)
+                if 100 <= price <= 100000000 and len(name) > 2:
+                    items.append({
+                        "name": name,
+                        "quantity": 1,
+                        "unit_price": None,
+                        "total_price": price
+                    })
+                    continue
+            except:
+                pass
+    
+    return items
+
+
+def extract_tax_and_service(text: str) -> tuple:
+    """Extract tax (PPN/PB1) and service charge from receipt."""
+    tax = None
+    service = None
+    
+    text_lower = text.lower()
+    
+    # Tax patterns (PPN, PB1, Tax)
+    tax_patterns = [
+        r'(?:ppn|pb1|tax|pajak)[:\s]*([\d.,]+)',
+        r'(?:ppn|pb1|tax|pajak)\s*\d+%[:\s]*([\d.,]+)',
+    ]
+    
+    for pattern in tax_patterns:
+        match = re.search(pattern, text_lower)
+        if match:
+            try:
+                tax_str = match.group(1).replace(".", "").replace(",", "")
+                tax = Decimal(tax_str)
+                if tax > 0 and tax < 10000000:  # Reasonable tax amount
+                    break
+            except:
+                continue
+    
+    # Service charge patterns
+    service_patterns = [
+        r'(?:service|servis|sc)[:\s]*([\d.,]+)',
+        r'(?:service|servis)\s*\d+%[:\s]*([\d.,]+)',
+    ]
+    
+    for pattern in service_patterns:
+        match = re.search(pattern, text_lower)
+        if match:
+            try:
+                service_str = match.group(1).replace(".", "").replace(",", "")
+                service = Decimal(service_str)
+                if service > 0 and service < 10000000:
+                    break
+            except:
+                continue
+    
+    return tax, service
+
+
+def extract_subtotal(text: str) -> Optional[Decimal]:
+    """Extract subtotal from receipt."""
+    patterns = [
+        r'(?:sub\s*total|subtotal)[:\s]*(?:Rp\.?|IDR)?\s*([\d.,]+)',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            try:
+                subtotal_str = match.group(1).replace(".", "").replace(",", "")
+                subtotal = Decimal(subtotal_str)
+                if 100 <= subtotal <= 100000000000:
+                    return subtotal
+            except:
+                continue
+    
+    return None
+
+
 # ============================================
 # Main Processing Function
 # ============================================
@@ -319,6 +617,7 @@ async def process_receipt_image(image_content: bytes, receipt_url: Optional[str]
     """
     Process receipt image: perform OCR and extract transaction data.
     Uses configured OCR provider (Tesseract or Google Vision).
+    Now includes itemized receipt parsing!
     """
     try:
         # Perform OCR
@@ -329,6 +628,10 @@ async def process_receipt_image(image_content: bytes, receipt_url: Optional[str]
                 "amount": None,
                 "merchant_name": None,
                 "transaction_date": date.today(),
+                "items": [],
+                "subtotal": None,
+                "tax": None,
+                "service_charge": None,
                 "raw_text": None,
                 "confidence": 0.0,
                 "receipt_url": receipt_url,
@@ -342,20 +645,33 @@ async def process_receipt_image(image_content: bytes, receipt_url: Optional[str]
         transaction_date = extract_date(text)
         merchant_name = extract_merchant(text)
         
+        # NEW: Extract items, tax, service charge
+        items = extract_items(text)
+        subtotal = extract_subtotal(text)
+        tax, service_charge = extract_tax_and_service(text)
+        
         success = amount is not None
         
         # Google Vision generally has higher confidence
         confidence = 0.9 if provider == "google_vision" and success else (0.7 if success else 0.0)
         
+        # If we found items, increase confidence
+        if items and len(items) > 0:
+            confidence = min(confidence + 0.1, 1.0)
+        
         return {
             "amount": amount,
             "merchant_name": merchant_name,
             "transaction_date": transaction_date or date.today(),
-            "raw_text": text[:500] if text else None,
+            "items": items,
+            "subtotal": subtotal,
+            "tax": tax,
+            "service_charge": service_charge,
+            "raw_text": text[:1000] if text else None,  # Increased to 1000 chars
             "confidence": confidence,
             "receipt_url": receipt_url,
             "success": success,
-            "message": "Data extracted successfully" if success else "Could not extract amount from receipt",
+            "message": f"Extracted {len(items)} items" if items else ("Data extracted successfully" if success else "Could not extract amount from receipt"),
             "ocr_provider": provider
         }
         
@@ -364,6 +680,10 @@ async def process_receipt_image(image_content: bytes, receipt_url: Optional[str]
             "amount": None,
             "merchant_name": None,
             "transaction_date": date.today(),
+            "items": [],
+            "subtotal": None,
+            "tax": None,
+            "service_charge": None,
             "raw_text": None,
             "confidence": 0.0,
             "receipt_url": receipt_url,
