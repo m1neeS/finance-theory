@@ -1,6 +1,6 @@
 ﻿import { useState, useRef, useCallback, useEffect } from 'react'
 import { ocrApi } from '../lib/api'
-import { X, Upload, Camera, Loader2, Image, CheckCircle, AlertCircle, Sparkles, Zap, SwitchCamera, Circle, ShoppingCart, Receipt, Check, Cpu, Cloud } from 'lucide-react'
+import { X, Upload, Camera, Loader2, Image, CheckCircle, AlertCircle, Sparkles, Zap, SwitchCamera, Circle, ShoppingCart, Receipt, Check, Cpu, Cloud, Plus, Edit2, Trash2, Calculator } from 'lucide-react'
 
 interface ReceiptItem { name: string; quantity: number; price: number }
 interface OCRResult { amount: number | null; merchant_name: string | null; transaction_date: string | null; items: ReceiptItem[]; receipt_url?: string; success: boolean; message: string; ocr_provider?: string }
@@ -20,6 +20,13 @@ export function OCRUpload({ onClose, onComplete }: OCRUploadProps) {
   const [selectedItems, setSelectedItems] = useState<Set<number>>(new Set())
   const [ocrProvider, setOcrProvider] = useState<'tesseract' | 'google_vision'>('tesseract')
   const [googleAvailable, setGoogleAvailable] = useState(false)
+  const [editableItems, setEditableItems] = useState<ReceiptItem[]>([])
+  const [showAddItem, setShowAddItem] = useState(false)
+  const [newItemName, setNewItemName] = useState('')
+  const [newItemPrice, setNewItemPrice] = useState('')
+  const [editingIndex, setEditingIndex] = useState<number | null>(null)
+  const [manualTotal, setManualTotal] = useState('')
+  const [useManualTotal, setUseManualTotal] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
@@ -68,16 +75,47 @@ export function OCRUpload({ onClose, onComplete }: OCRUploadProps) {
     try {
       const response = await ocrApi.scan(file, ocrProvider)
       const result = response.data as OCRResult
-      setOcrResult(result); setSelectedItems(new Set(result.items?.map((_, i) => i) || [])); setMode('result')
+      setOcrResult(result)
+      setEditableItems(result.items || [])
+      setSelectedItems(new Set(result.items?.map((_, i) => i) || []))
+      if (result.amount) setManualTotal(result.amount.toString())
+      setMode('result')
     } catch (err: any) { setError(err.response?.data?.detail || 'Gagal memproses gambar') }
     finally { setLoading(false) }
   }
 
   const toggleItem = (index: number) => { const newSelected = new Set(selectedItems); if (newSelected.has(index)) newSelected.delete(index); else newSelected.add(index); setSelectedItems(newSelected) }
-  const calculateSelectedTotal = () => { if (!ocrResult?.items) return 0; return ocrResult.items.filter((_, i) => selectedItems.has(i)).reduce((sum, item) => sum + Number(item.price), 0) }
+  const calculateSelectedTotal = () => editableItems.filter((_, i) => selectedItems.has(i)).reduce((sum, item) => sum + Number(item.price), 0)
   const formatCurrency = (amount: number) => new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(amount)
-  const resetToSelect = () => { stopCamera(); setFile(null); setPreview(null); setMode('select'); setError(''); setOcrResult(null) }
+  const resetToSelect = () => { stopCamera(); setFile(null); setPreview(null); setMode('select'); setError(''); setOcrResult(null); setEditableItems([]); setUseManualTotal(false); setManualTotal('') }
   const handleClose = () => { stopCamera(); onClose() }
+
+  const addItem = () => {
+    if (!newItemName.trim() || !newItemPrice) return
+    const newItem = { name: newItemName.trim(), quantity: 1, price: parseFloat(newItemPrice) }
+    setEditableItems([...editableItems, newItem])
+    setSelectedItems(new Set([...selectedItems, editableItems.length]))
+    setNewItemName(''); setNewItemPrice(''); setShowAddItem(false)
+  }
+
+  const updateItem = (index: number, field: 'name' | 'price', value: string) => {
+    const updated = [...editableItems]
+    if (field === 'name') updated[index].name = value
+    else updated[index].price = parseFloat(value) || 0
+    setEditableItems(updated)
+  }
+
+  const deleteItem = (index: number) => {
+    setEditableItems(editableItems.filter((_, i) => i !== index))
+    const newSelected = new Set<number>()
+    selectedItems.forEach(i => { if (i < index) newSelected.add(i); else if (i > index) newSelected.add(i - 1) })
+    setSelectedItems(newSelected)
+  }
+
+  const getFinalAmount = () => {
+    if (useManualTotal) return parseFloat(manualTotal) || 0
+    return editableItems.length > 0 ? calculateSelectedTotal() : (ocrResult?.amount || 0)
+  }
 
   const tesseractClass = ocrProvider === 'tesseract' ? 'bg-white shadow text-emerald-600' : 'text-gray-500'
   const googleClass = ocrProvider === 'google_vision' ? 'bg-white shadow text-violet-600' : 'text-gray-500'
@@ -144,55 +182,108 @@ export function OCRUpload({ onClose, onComplete }: OCRUploadProps) {
                 <span className="text-sm font-medium text-emerald-700">Struk berhasil di-scan!</span>
                 {ocrResult.ocr_provider && <span className="ml-auto text-xs bg-gray-200 px-2 py-0.5 rounded">{ocrResult.ocr_provider}</span>}
               </div>
+
+              <div className="p-3 bg-amber-50 rounded-xl text-xs text-amber-700 flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                <span>AI mungkin tidak 100% akurat. Silakan periksa dan edit item jika perlu.</span>
+              </div>
+
               {ocrResult.merchant_name && (
                 <div className="p-3 bg-gray-50 rounded-xl">
                   <p className="text-xs text-gray-500">Merchant</p>
                   <p className="font-semibold text-gray-800">{ocrResult.merchant_name}</p>
                 </div>
               )}
-              {ocrResult.items && ocrResult.items.length > 0 ? (
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <p className="text-sm font-medium text-gray-700 flex items-center gap-2"><ShoppingCart className="w-4 h-4" /> Item Terdeteksi</p>
-                    <button onClick={() => setSelectedItems(selectedItems.size === ocrResult.items.length ? new Set() : new Set(ocrResult.items.map((_, i) => i)))} className="text-xs text-emerald-600 hover:underline">{selectedItems.size === ocrResult.items.length ? 'Hapus Semua' : 'Pilih Semua'}</button>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium text-gray-700 flex items-center gap-2"><ShoppingCart className="w-4 h-4" /> Item ({editableItems.length})</p>
+                  <div className="flex gap-2">
+                    {editableItems.length > 0 && (
+                      <button onClick={() => setSelectedItems(selectedItems.size === editableItems.length ? new Set() : new Set(editableItems.map((_, i) => i)))} className="text-xs text-emerald-600 hover:underline">
+                        {selectedItems.size === editableItems.length ? 'Hapus Semua' : 'Pilih Semua'}
+                      </button>
+                    )}
                   </div>
-                  <div className="max-h-48 overflow-y-auto space-y-2">
-                    {ocrResult.items.map((item, index) => {
+                </div>
+
+                {editableItems.length > 0 ? (
+                  <div className="max-h-40 overflow-y-auto space-y-2">
+                    {editableItems.map((item, index) => {
                       const isSelected = selectedItems.has(index)
-                      const itemClass = isSelected ? 'bg-emerald-50 border-2 border-emerald-400' : 'bg-gray-50 border-2 border-transparent hover:border-gray-200'
-                      const checkClass = isSelected ? 'bg-emerald-500' : 'bg-gray-200'
+                      const isEditing = editingIndex === index
                       return (
-                        <div key={index} onClick={() => toggleItem(index)} className={'flex items-center gap-3 p-3 rounded-xl cursor-pointer transition-all ' + itemClass}>
-                          <div className={'w-5 h-5 rounded-md flex items-center justify-center ' + checkClass}>{isSelected && <Check className="w-3 h-3 text-white" />}</div>
-                          <div className="flex-1 min-w-0"><p className="font-medium text-gray-800 text-sm truncate">{item.name}</p>{item.quantity > 1 && <p className="text-xs text-gray-500">x{item.quantity}</p>}</div>
-                          <p className="font-semibold text-gray-800 text-sm">{formatCurrency(item.price)}</p>
+                        <div key={index} className={'flex items-center gap-2 p-2 rounded-xl transition-all ' + (isSelected ? 'bg-emerald-50 border-2 border-emerald-400' : 'bg-gray-50 border-2 border-transparent')}>
+                          <button onClick={() => toggleItem(index)} className={'w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0 ' + (isSelected ? 'bg-emerald-500' : 'bg-gray-200')}>
+                            {isSelected && <Check className="w-3 h-3 text-white" />}
+                          </button>
+                          {isEditing ? (
+                            <>
+                              <input type="text" value={item.name} onChange={(e) => updateItem(index, 'name', e.target.value)} className="flex-1 text-sm px-2 py-1 border rounded" />
+                              <input type="number" value={item.price} onChange={(e) => updateItem(index, 'price', e.target.value)} className="w-24 text-sm px-2 py-1 border rounded text-right" />
+                              <button onClick={() => setEditingIndex(null)} className="p-1 text-emerald-600"><Check className="w-4 h-4" /></button>
+                            </>
+                          ) : (
+                            <>
+                              <div className="flex-1 min-w-0"><p className="font-medium text-gray-800 text-sm truncate">{item.name}</p></div>
+                              <p className="font-semibold text-gray-800 text-sm">{formatCurrency(item.price)}</p>
+                              <button onClick={() => setEditingIndex(index)} className="p-1 text-gray-400 hover:text-gray-600"><Edit2 className="w-3.5 h-3.5" /></button>
+                              <button onClick={() => deleteItem(index)} className="p-1 text-gray-400 hover:text-red-500"><Trash2 className="w-3.5 h-3.5" /></button>
+                            </>
+                          )}
                         </div>
                       )
                     })}
                   </div>
-                </div>
-              ) : (
-                <div className="p-4 bg-amber-50 rounded-xl flex items-start gap-3">
-                  <AlertCircle className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
-                  <div>
-                    <p className="font-medium text-amber-800 text-sm">Item tidak terdeteksi</p>
-                    <p className="text-xs text-amber-600 mt-1">Struk mungkin kurang jelas atau format tidak dikenali. Total akan digunakan langsung.</p>
+                ) : (
+                  <div className="p-3 bg-gray-50 rounded-xl text-center text-sm text-gray-500">Tidak ada item terdeteksi</div>
+                )}
+
+                {showAddItem ? (
+                  <div className="flex items-center gap-2 p-2 bg-blue-50 rounded-xl border-2 border-blue-200">
+                    <input type="text" placeholder="Nama item" value={newItemName} onChange={(e) => setNewItemName(e.target.value)} className="flex-1 text-sm px-2 py-1 border rounded" />
+                    <input type="number" placeholder="Harga" value={newItemPrice} onChange={(e) => setNewItemPrice(e.target.value)} className="w-24 text-sm px-2 py-1 border rounded text-right" />
+                    <button onClick={addItem} className="p-1 text-emerald-600 hover:text-emerald-700"><Check className="w-4 h-4" /></button>
+                    <button onClick={() => { setShowAddItem(false); setNewItemName(''); setNewItemPrice('') }} className="p-1 text-gray-400 hover:text-gray-600"><X className="w-4 h-4" /></button>
                   </div>
+                ) : (
+                  <button onClick={() => setShowAddItem(true)} className="w-full flex items-center justify-center gap-2 p-2 border-2 border-dashed border-gray-300 rounded-xl text-sm text-gray-500 hover:border-emerald-400 hover:text-emerald-600 transition-all">
+                    <Plus className="w-4 h-4" /> Tambah Item Manual
+                  </button>
+                )}
+              </div>
+
+              <div className="border-t pt-4 space-y-3">
+                <div className="flex items-center gap-2">
+                  <button onClick={() => setUseManualTotal(!useManualTotal)} className={'flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-all ' + (useManualTotal ? 'bg-violet-100 text-violet-700' : 'bg-gray-100 text-gray-600')}>
+                    <Calculator className="w-4 h-4" />
+                    {useManualTotal ? 'Input Manual Aktif' : 'Input Total Manual'}
+                  </button>
                 </div>
-              )}
-              <div className="p-4 bg-gradient-to-r from-emerald-500 to-teal-500 rounded-xl text-white">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm text-white/80">{ocrResult.items?.length > 0 ? 'Total (' + selectedItems.size + ' item dipilih)' : 'Total dari Struk'}</p>
-                    <p className="text-2xl font-bold">{formatCurrency(ocrResult.items?.length > 0 ? calculateSelectedTotal() : (ocrResult.amount || 0))}</p>
+
+                {useManualTotal && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-gray-600">Rp</span>
+                    <input type="number" value={manualTotal} onChange={(e) => setManualTotal(e.target.value)} placeholder="Masukkan total" className="flex-1 px-3 py-2 border-2 border-violet-200 rounded-xl text-lg font-semibold focus:border-violet-400 outline-none" />
                   </div>
-                  <Receipt className="w-10 h-10 text-white/30" />
+                )}
+
+                <div className="p-4 bg-gradient-to-r from-emerald-500 to-teal-500 rounded-xl text-white">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-sm text-white/80">{useManualTotal ? 'Total Manual' : (editableItems.length > 0 ? 'Total (' + selectedItems.size + ' item)' : 'Total dari Struk')}</p>
+                      <p className="text-2xl font-bold">{formatCurrency(getFinalAmount())}</p>
+                    </div>
+                    <Receipt className="w-10 h-10 text-white/30" />
+                  </div>
                 </div>
               </div>
+
               {error && <div className="p-3 bg-red-50 rounded-xl text-red-600 text-sm flex items-center gap-2"><AlertCircle className="w-4 h-4" />{error}</div>}
+
               <div className="flex gap-3">
                 <button onClick={resetToSelect} className="flex-1 py-3 bg-gray-100 hover:bg-gray-200 rounded-xl font-medium text-gray-600">Scan Ulang</button>
-                <button onClick={() => onComplete({ amount: ocrResult.items?.length > 0 ? calculateSelectedTotal() : ocrResult.amount, merchant_name: ocrResult.merchant_name, transaction_date: ocrResult.transaction_date, items: ocrResult.items?.filter((_, i) => selectedItems.has(i)) || [], receipt_url: ocrResult.receipt_url })} className="flex-1 flex items-center justify-center gap-2 py-3 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl font-medium shadow-lg"><Sparkles className="w-5 h-5" /> Lanjutkan</button>
+                <button onClick={() => onComplete({ amount: getFinalAmount(), merchant_name: ocrResult.merchant_name, transaction_date: ocrResult.transaction_date, items: editableItems.filter((_, i) => selectedItems.has(i)), receipt_url: ocrResult.receipt_url })} className="flex-1 flex items-center justify-center gap-2 py-3 bg-gradient-to-r from-emerald-500 to-teal-500 text-white rounded-xl font-medium shadow-lg"><Sparkles className="w-5 h-5" /> Lanjutkan</button>
               </div>
             </div>
           )}
